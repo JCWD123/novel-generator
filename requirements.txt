@@ -1,0 +1,15 @@
+# vLLM 和模型部署
+vllm>=0.6.0
+torch>=2.1.0
+transformers>=4.45.0
+huggingface_hub>=0.25.0
+accelerate>=0.25.0
+
+# Streamlit 前端
+streamlit>=1.40.0
+
+# 工具库
+python-dotenv>=1.0.0
+pydantic>=2.0.0
+requests>=2.31.0
+openai>=1.0.0
