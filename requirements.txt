@@ -2,23 +2,18 @@
 vllm>=0.6.0
 torch>=2.1.0
 
-# ==================== AWQ 量化 ====================
-autoawq>=0.2.0
-autoawq-kernels
-
 # ==================== Transformers 生态 ====================
-transformers==4.46.0
-accelerate==1.0.1
+transformers>=4.45.0
+accelerate>=1.0.0
 huggingface_hub>=0.25.0
 
 # ==================== 量化支持 ====================
-bitsandbytes==0.43.3
-ninja
+# BitsAndBytes 4-bit 量化（推荐，vLLM 运行时量化）
+bitsandbytes>=0.43.0
 
 # ==================== 数据处理 ====================
-datasets==3.0.0
+datasets>=3.0.0
 einops
-protobuf==3.20.*
 sentencepiece
 
 # ==================== Streamlit 前端 ====================

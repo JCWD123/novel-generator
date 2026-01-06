@@ -1,57 +1,58 @@
 #!/usr/bin/env python3
 """
-AWQ 4-bit 量化脚本
+模型量化脚本
 
-将 DeepSeek-R1 蒸馏版模型量化为 AWQ 4-bit 格式，大幅减少显存占用。
+支持多种量化方式：
+1. BitsAndBytes 4-bit 量化（推荐，直接在 vLLM 中使用）
+2. GPTQ 量化
+3. 使用预量化模型
+
+由于 autoawq 库存在兼容性问题，推荐直接使用 vLLM 的运行时量化功能。
 
 用法：
-    # 量化 70B 模型（需要较大内存）
-    python awq_quantization.py \
-        --model_path /home/user/models/deepseek-ai--DeepSeek-R1-Distill-Llama-70B \
-        --quant_path /home/user/models/DeepSeek-R1-Distill-Llama-70B-AWQ \
-        --max_calib_seq_len 2048
+    # 方式一（推荐）：直接在 vLLM 中启用量化，无需预处理
+    python start_vllm_server.py --model deepseek-ai/DeepSeek-R1-Distill-Qwen-7B --quantization bnb
+    
+    # 方式二：下载预量化模型
+    python awq_quantization.py --download-quantized deepseek-r1-7b
+    
+    # 方式三：使用 GPTQ 量化（需要 auto-gptq）
+    python awq_quantization.py --gptq --model-path /path/to/model --output /path/to/output
 
-    # 量化 7B 模型
-    python awq_quantization.py \
-        --model_path /home/user/models/deepseek-ai--DeepSeek-R1-Distill-Qwen-7B \
-        --quant_path /home/user/models/DeepSeek-R1-Distill-Qwen-7B-AWQ
-        
-    # 使用自定义校准数据
-    python awq_quantization.py \
-        --model_path /home/user/models/deepseek-ai--DeepSeek-R1-Distill-Llama-70B \
-        --quant_path /home/user/models/DeepSeek-R1-Distill-Llama-70B-AWQ \
-        --calib_data pileval \
-        --max_calib_seq_len 2048 \
-        --max_calib_samples 512
-
-量化配置说明：
-    - w_bit: 权重位数，4表示4-bit量化
-    - q_group_size: 量化分组大小，64是常用值
-    - zero_point: 是否使用零点量化
-    - version: GEMM表示使用矩阵乘法优化的内核
+注意：
+    - vLLM >= 0.6.0 支持 BitsAndBytes 运行时 4-bit 量化
+    - 无需预先量化模型，直接在启动时添加 --quantization bnb 即可
+    - 预量化模型可以加快启动速度，但灵活性较低
 """
 
 import argparse
 import os
 import sys
+import subprocess
 from pathlib import Path
+from typing import Optional
+
+
+# 预量化模型列表（HuggingFace 上可用的预量化版本）
+PRE_QUANTIZED_MODELS = {
+    # DeepSeek-R1 AWQ 版本
+    "deepseek-r1-7b-awq": "TheBloke/DeepSeek-R1-Distill-Qwen-7B-AWQ",
+    "deepseek-r1-14b-awq": "TheBloke/DeepSeek-R1-Distill-Qwen-14B-AWQ",
+    "deepseek-r1-32b-awq": "TheBloke/DeepSeek-R1-Distill-Qwen-32B-AWQ",
+    
+    # DeepSeek-R1 GPTQ 版本
+    "deepseek-r1-7b-gptq": "TheBloke/DeepSeek-R1-Distill-Qwen-7B-GPTQ",
+    "deepseek-r1-14b-gptq": "TheBloke/DeepSeek-R1-Distill-Qwen-14B-GPTQ",
+    
+    # 其他常用模型
+    "qwen2-7b-awq": "Qwen/Qwen2-7B-Instruct-AWQ",
+    "llama3-8b-awq": "casperhansen/llama-3-8b-instruct-awq",
+}
 
 
 def check_dependencies():
-    """检查必要的依赖是否已安装"""
-    missing = []
-    
-    try:
-        import awq
-        print(f"✅ AutoAWQ 版本: {awq.__version__}")
-    except ImportError:
-        missing.append("autoawq")
-    
-    try:
-        import transformers
-        print(f"✅ Transformers 版本: {transformers.__version__}")
-    except ImportError:
-        missing.append("transformers")
+    """检查必要的依赖"""
+    print("🔍 检查依赖...\n")
     
     try:
         import torch
@@ -60,229 +61,306 @@ def check_dependencies():
             print(f"✅ CUDA 可用: {torch.cuda.get_device_name(0)}")
             print(f"✅ 显存: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB")
         else:
-            print("⚠️ CUDA 不可用，量化将在 CPU 上进行（非常慢）")
+            print("⚠️ CUDA 不可用")
     except ImportError:
-        missing.append("torch")
+        print("❌ PyTorch 未安装")
+        return False
     
-    if missing:
-        print(f"\n❌ 缺少依赖: {', '.join(missing)}")
-        print("请先安装依赖: pip install " + " ".join(missing))
-        sys.exit(1)
+    try:
+        import transformers
+        print(f"✅ Transformers 版本: {transformers.__version__}")
+    except ImportError:
+        print("❌ Transformers 未安装")
+        return False
+    
+    # 检查 bitsandbytes（可选）
+    try:
+        import bitsandbytes
+        print(f"✅ BitsAndBytes 版本: {bitsandbytes.__version__}")
+    except ImportError:
+        print("⚠️ BitsAndBytes 未安装（可选，用于 4-bit 量化）")
     
     return True
 
 
-def quantize_model(
+def download_model(model_name: str, use_mirror: bool = False) -> bool:
+    """下载模型"""
+    print(f"\n{'='*70}")
+    print(f"📥 下载模型: {model_name}")
+    print(f"{'='*70}")
+    
+    env = os.environ.copy()
+    
+    if use_mirror:
+        env["HF_ENDPOINT"] = "https://hf-mirror.com"
+        print(f"🌐 使用镜像: https://hf-mirror.com")
+    
+    # 尝试启用 hf_transfer
+    try:
+        import hf_transfer
+        env["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
+        print(f"⚡ 启用 hf_transfer 加速")
+    except ImportError:
+        print(f"📡 使用普通下载模式")
+    
+    cmd = [
+        sys.executable, "-m", "huggingface_hub.commands.huggingface_cli",
+        "download", model_name
+    ]
+    
+    try:
+        process = subprocess.run(cmd, env=env)
+        return process.returncode == 0
+    except Exception as e:
+        print(f"❌ 下载失败: {e}")
+        return False
+
+
+def list_quantized_models():
+    """列出可用的预量化模型"""
+    print("\n" + "="*70)
+    print("📦 可用的预量化模型")
+    print("="*70)
+    
+    print("\n🔸 DeepSeek-R1 系列 (AWQ 4-bit):")
+    for key, model in PRE_QUANTIZED_MODELS.items():
+        if "deepseek" in key and "awq" in key:
+            print(f"  {key}: {model}")
+    
+    print("\n🔸 DeepSeek-R1 系列 (GPTQ 4-bit):")
+    for key, model in PRE_QUANTIZED_MODELS.items():
+        if "deepseek" in key and "gptq" in key:
+            print(f"  {key}: {model}")
+    
+    print("\n🔸 其他模型:")
+    for key, model in PRE_QUANTIZED_MODELS.items():
+        if "deepseek" not in key:
+            print(f"  {key}: {model}")
+    
+    print("\n" + "="*70)
+    print("\n💡 使用方法:")
+    print("  python awq_quantization.py --download-quantized deepseek-r1-7b-awq --mirror")
+    print("\n💡 或者直接使用 vLLM 运行时量化（推荐）:")
+    print("  python start_vllm_server.py --model deepseek-ai/DeepSeek-R1-Distill-Qwen-7B --quantization bnb")
+    print("="*70)
+
+
+def convert_to_bnb_4bit(
     model_path: str,
-    quant_path: str,
-    calib_data: str = "pileval",
-    max_calib_seq_len: int = 2048,
-    max_calib_samples: int = 512,
-    w_bit: int = 4,
-    q_group_size: int = 64,
-    zero_point: bool = True,
-    version: str = "GEMM"
+    output_path: str,
+    compute_dtype: str = "bfloat16"
 ):
     """
-    执行 AWQ 量化
+    将模型转换为 BitsAndBytes 4-bit 格式
     
-    Args:
-        model_path: 原始模型路径
-        quant_path: 量化后模型保存路径
-        calib_data: 校准数据集名称或路径
-        max_calib_seq_len: 校准序列最大长度
-        max_calib_samples: 校准样本数量
-        w_bit: 权重位数 (4)
-        q_group_size: 量化分组大小 (64/128)
-        zero_point: 是否使用零点
-        version: 量化版本 (GEMM/GEMV)
+    注意：这会创建一个新的模型目录，但 vLLM 更推荐直接使用运行时量化
     """
-    from awq import AutoAWQForCausalLM
-    from transformers import AutoTokenizer, AwqConfig
-    
     print(f"\n{'='*70}")
-    print(f"🔧 AWQ 4-bit 量化")
+    print(f"🔧 BitsAndBytes 4-bit 转换")
     print(f"{'='*70}")
     print(f"📂 源模型: {model_path}")
-    print(f"📂 目标路径: {quant_path}")
-    print(f"📊 校准数据: {calib_data}")
-    print(f"📏 最大序列长度: {max_calib_seq_len}")
-    print(f"📈 校准样本数: {max_calib_samples}")
-    print(f"{'='*70}")
-    print(f"⚙️ 量化配置:")
-    print(f"   ├─ 权重位数: {w_bit}-bit")
-    print(f"   ├─ 分组大小: {q_group_size}")
-    print(f"   ├─ 零点量化: {'是' if zero_point else '否'}")
-    print(f"   └─ 版本: {version}")
+    print(f"📂 输出路径: {output_path}")
     print(f"{'='*70}\n")
     
-    # 检查源模型是否存在
-    if not os.path.exists(model_path):
-        print(f"❌ 模型路径不存在: {model_path}")
-        sys.exit(1)
+    try:
+        import torch
+        from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+        
+        # 配置量化
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=getattr(torch, compute_dtype),
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_use_double_quant=True,
+        )
+        
+        print("📥 加载模型...")
+        model = AutoModelForCausalLM.from_pretrained(
+            model_path,
+            quantization_config=bnb_config,
+            device_map="auto",
+            trust_remote_code=True,
+        )
+        
+        print("📥 加载 Tokenizer...")
+        tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+        
+        print("💾 保存量化模型...")
+        Path(output_path).mkdir(parents=True, exist_ok=True)
+        model.save_pretrained(output_path)
+        tokenizer.save_pretrained(output_path)
+        
+        print(f"\n✅ 转换完成!")
+        print(f"📂 输出路径: {output_path}")
+        
+    except ImportError as e:
+        print(f"❌ 缺少依赖: {e}")
+        print("请安装: pip install bitsandbytes accelerate")
+        return False
+    except Exception as e:
+        print(f"❌ 转换失败: {e}")
+        return False
     
-    # 创建输出目录
-    Path(quant_path).mkdir(parents=True, exist_ok=True)
-    
-    # 量化配置
-    quant_config = {
-        "zero_point": zero_point,
-        "q_group_size": q_group_size,
-        "w_bit": w_bit,
-        "version": version
-    }
-    
-    print("📥 加载模型...")
-    model = AutoAWQForCausalLM.from_pretrained(
-        model_path,
-        trust_remote_code=True,
-        safetensors=True,  # 优先使用 safetensors 格式
-    )
-    
-    print("📥 加载 Tokenizer...")
-    tokenizer = AutoTokenizer.from_pretrained(
-        model_path,
-        trust_remote_code=True
-    )
-    
-    print(f"\n🔄 开始量化（这可能需要较长时间）...")
-    print(f"   使用校准数据: {calib_data}")
-    
-    # 执行量化
-    model.quantize(
-        tokenizer,
-        quant_config=quant_config,
-        calib_data=calib_data,
-        max_calib_seq_len=max_calib_seq_len,
-        max_calib_samples=max_calib_samples,
-    )
-    
-    print("\n💾 保存量化模型...")
-    
-    # 创建量化配置
-    quantization_config = AwqConfig(
-        bits=quant_config["w_bit"],
-        group_size=quant_config["q_group_size"],
-        zero_point=quant_config["zero_point"],
-        version=quant_config["version"].lower(),
-    ).to_dict()
-    
-    # 更新模型配置
-    model.model.config.quantization_config = quantization_config
-    
-    # 保存模型和 tokenizer
-    model.save_quantized(quant_path)
-    tokenizer.save_pretrained(quant_path)
-    
-    # 计算压缩后大小
-    quant_size = sum(f.stat().st_size for f in Path(quant_path).rglob("*") if f.is_file())
-    quant_size_gb = quant_size / (1024**3)
-    
-    print(f"\n{'='*70}")
-    print(f"✅ 量化完成!")
-    print(f"{'='*70}")
-    print(f"📂 保存路径: {quant_path}")
-    print(f"📦 模型大小: {quant_size_gb:.2f} GB")
-    print(f"{'='*70}")
-    print(f"\n💡 使用方法:")
-    print(f"   python start_vllm_server.py --model {quant_path} --quantization awq")
-    print(f"{'='*70}\n")
+    return True
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="AWQ 4-bit 模型量化工具",
+        description="模型量化工具",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-示例:
-  # 量化 DeepSeek-R1 70B 蒸馏版
-  python awq_quantization.py \\
-      --model_path /home/user/models/deepseek-ai--DeepSeek-R1-Distill-Llama-70B \\
-      --quant_path /home/user/models/DeepSeek-R1-Distill-Llama-70B-AWQ
-      
-  # 量化 7B 模型（适合测试）
-  python awq_quantization.py \\
-      --model_path /home/user/models/deepseek-ai--DeepSeek-R1-Distill-Qwen-7B \\
-      --quant_path /home/user/models/DeepSeek-R1-Distill-Qwen-7B-AWQ \\
-      --max_calib_seq_len 1024
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📌 推荐方式：
 
-校准数据集选项:
-  - pileval (默认): AutoAWQ 内置的 WikiText 数据集
-  - wikitext: HuggingFace wikitext 数据集
-  - 自定义 HuggingFace 数据集路径
+  🔹 方式一（最简单）：直接使用 vLLM 运行时量化
+     python start_vllm_server.py --model deepseek-ai/DeepSeek-R1-Distill-Qwen-7B --quantization bnb
+     
+  🔹 方式二：下载预量化模型
+     python awq_quantization.py --download-quantized deepseek-r1-7b-awq --mirror
+     python start_vllm_server.py --model TheBloke/DeepSeek-R1-Distill-Qwen-7B-AWQ --quantization awq
+
+  🔹 方式三：双卡张量并行 + 量化
+     python start_vllm_server.py --model deepseek-ai/DeepSeek-R1-Distill-Llama-70B \\
+         --quantization bnb --tensor-parallel 2
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+💡 说明：
+  - vLLM >= 0.6.0 支持 BitsAndBytes 运行时 4-bit 量化
+  - 运行时量化无需预处理，直接添加 --quantization bnb 参数
+  - 预量化模型启动更快，但需要额外下载
+  - 张量并行可将模型分布到多张 GPU
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         """
     )
     
+    # 列出可用模型
     parser.add_argument(
-        "--model_path",
-        type=str,
-        default="/home/user/models/deepseek-ai--DeepSeek-R1-Distill-Llama-70B",
-        help="原始模型路径"
-    )
-    parser.add_argument(
-        "--quant_path",
-        type=str,
-        default="/home/user/models/DeepSeek-R1-Distill-Llama-70B-AWQ",
-        help="量化后模型保存路径"
-    )
-    parser.add_argument(
-        "--calib_data",
-        type=str,
-        default="pileval",
-        help="校准数据集 (pileval/wikitext/自定义HF数据集)"
-    )
-    parser.add_argument(
-        "--max_calib_seq_len",
-        type=int,
-        default=2048,
-        help="校准序列最大长度 (默认: 2048)"
-    )
-    parser.add_argument(
-        "--max_calib_samples",
-        type=int,
-        default=512,
-        help="校准样本数量 (默认: 512)"
-    )
-    parser.add_argument(
-        "--w_bit",
-        type=int,
-        default=4,
-        choices=[4, 8],
-        help="量化位数 (默认: 4)"
-    )
-    parser.add_argument(
-        "--q_group_size",
-        type=int,
-        default=64,
-        choices=[32, 64, 128],
-        help="量化分组大小 (默认: 64)"
-    )
-    parser.add_argument(
-        "--check-only",
+        "--list",
         action="store_true",
-        help="只检查依赖，不执行量化"
+        help="列出可用的预量化模型"
+    )
+    
+    # 下载预量化模型
+    parser.add_argument(
+        "--download-quantized",
+        type=str,
+        metavar="MODEL_KEY",
+        help="下载预量化模型（如 deepseek-r1-7b-awq）"
+    )
+    
+    # BNB 转换
+    parser.add_argument(
+        "--convert-bnb",
+        action="store_true",
+        help="将模型转换为 BitsAndBytes 4-bit 格式"
+    )
+    parser.add_argument(
+        "--model-path",
+        type=str,
+        help="源模型路径"
+    )
+    parser.add_argument(
+        "--output",
+        type=str,
+        help="输出路径"
+    )
+    
+    # 通用选项
+    parser.add_argument(
+        "--mirror",
+        action="store_true",
+        help="使用 HuggingFace 镜像 (hf-mirror.com)"
+    )
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="只检查依赖"
     )
     
     args = parser.parse_args()
     
-    # 检查依赖
-    print("🔍 检查依赖...\n")
-    check_dependencies()
-    
-    if args.check_only:
-        print("\n✅ 依赖检查完成")
+    # 列出模型
+    if args.list:
+        list_quantized_models()
         return 0
     
-    # 执行量化
-    quantize_model(
-        model_path=args.model_path,
-        quant_path=args.quant_path,
-        calib_data=args.calib_data,
-        max_calib_seq_len=args.max_calib_seq_len,
-        max_calib_samples=args.max_calib_samples,
-        w_bit=args.w_bit,
-        q_group_size=args.q_group_size,
-    )
+    # 检查依赖
+    if args.check:
+        check_dependencies()
+        return 0
+    
+    # 下载预量化模型
+    if args.download_quantized:
+        model_key = args.download_quantized
+        
+        if model_key in PRE_QUANTIZED_MODELS:
+            model_name = PRE_QUANTIZED_MODELS[model_key]
+        else:
+            # 尝试作为完整模型名使用
+            model_name = model_key
+        
+        print(f"\n下载预量化模型: {model_name}")
+        
+        if download_model(model_name, use_mirror=args.mirror):
+            print(f"\n✅ 下载完成!")
+            print(f"\n💡 使用方法:")
+            
+            if "awq" in model_key.lower() or "awq" in model_name.lower():
+                print(f"  python start_vllm_server.py --model {model_name} --quantization awq")
+            elif "gptq" in model_key.lower() or "gptq" in model_name.lower():
+                print(f"  python start_vllm_server.py --model {model_name} --quantization gptq")
+            else:
+                print(f"  python start_vllm_server.py --model {model_name}")
+        else:
+            print(f"\n❌ 下载失败")
+            return 1
+        
+        return 0
+    
+    # BNB 转换
+    if args.convert_bnb:
+        if not args.model_path or not args.output:
+            print("❌ 请指定 --model-path 和 --output")
+            return 1
+        
+        check_dependencies()
+        
+        if convert_to_bnb_4bit(args.model_path, args.output):
+            print(f"\n💡 使用方法:")
+            print(f"  python start_vllm_server.py --model {args.output} --quantization bnb")
+        else:
+            return 1
+        
+        return 0
+    
+    # 默认显示帮助
+    print("\n" + "="*70)
+    print("📚 模型量化指南")
+    print("="*70)
+    
+    print("""
+💡 推荐方式：直接使用 vLLM 运行时量化（最简单）
+
+  # 单卡 + BNB 4-bit 量化
+  python start_vllm_server.py \\
+      --model deepseek-ai/DeepSeek-R1-Distill-Qwen-7B \\
+      --quantization bnb
+
+  # 双卡张量并行 + 量化（适合 70B 模型）
+  python start_vllm_server.py \\
+      --model deepseek-ai/DeepSeek-R1-Distill-Llama-70B \\
+      --quantization bnb \\
+      --tensor-parallel 2
+
+  # 使用本地模型路径
+  python start_vllm_server.py \\
+      --model /home/user/models/deepseek-ai--DeepSeek-R1-Distill-Llama-70B \\
+      --quantization bnb \\
+      --tensor-parallel 2
+""")
+    
+    print("="*70)
+    print("\n运行 --help 查看更多选项")
     
     return 0
 
