@@ -1,15 +1,35 @@
-# vLLM 和模型部署
+# ==================== vLLM 核心 ====================
 vllm>=0.6.0
 torch>=2.1.0
-transformers>=4.45.0
-huggingface_hub>=0.25.0
-accelerate>=0.25.0
 
-# Streamlit 前端
+# ==================== AWQ 量化 ====================
+autoawq>=0.2.0
+autoawq-kernels
+
+# ==================== Transformers 生态 ====================
+transformers==4.46.0
+accelerate==1.0.1
+huggingface_hub>=0.25.0
+
+# ==================== 量化支持 ====================
+bitsandbytes==0.43.3
+ninja
+
+# ==================== 数据处理 ====================
+datasets==3.0.0
+einops
+protobuf==3.20.*
+sentencepiece
+
+# ==================== Streamlit 前端 ====================
 streamlit>=1.40.0
 
-# 工具库
+# ==================== 工具库 ====================
 python-dotenv>=1.0.0
 pydantic>=2.0.0
 requests>=2.31.0
 openai>=1.0.0
+
+# ==================== 进度显示 ====================
+tqdm>=4.66.0
+rich>=13.0.0
