@@ -56,64 +56,74 @@ MODELS = {
     "70b": "deepseek-ai/DeepSeek-R1-Distill-Llama-70B",
 }
 
-# HuggingFace 缓存目录（按优先级）
-HF_CACHE_DIRS = [
-    os.path.expanduser("~/.cache/huggingface/hub"),  # Linux/WSL 默认
-    "/home/birdi/.cache/huggingface/hub",            # 你的 WSL 路径
-    os.path.expandvars("$HF_HOME/hub"),              # 自定义 HF_HOME
-]
+# HuggingFace 缓存目录
+HF_CACHE_DIR = os.path.expanduser("~/.cache/huggingface/hub")
 
 
-def get_local_model_path(model_id: str) -> str:
+def get_local_model_path(model_id: str) -> tuple:
     """
     检查模型是否已下载到本地，返回本地 snapshot 路径
     
-    直接扫描 HuggingFace 缓存目录结构，不依赖 scan_cache_dir()
+    直接扫描 HuggingFace 缓存目录结构
     
     Args:
         model_id: HuggingFace 模型 ID (如 deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B)
         
     Returns:
-        本地模型路径（绝对路径），如果不存在则返回 None
+        (local_path, status) - status: "complete" / "incomplete" / "not_found"
     """
     # 将模型 ID 转换为缓存目录名格式
-    # deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B -> models--deepseek-ai--DeepSeek-R1-Distill-Qwen-1.5B
     cache_dir_name = "models--" + model_id.replace("/", "--")
+    model_cache_dir = os.path.join(HF_CACHE_DIR, cache_dir_name)
     
-    for cache_root in HF_CACHE_DIRS:
-        cache_root = os.path.expanduser(cache_root)
-        if not os.path.exists(cache_root):
+    if not os.path.exists(model_cache_dir):
+        return None, "not_found"
+    
+    # 检查 blobs 目录是否有 .incomplete 文件
+    blobs_dir = os.path.join(model_cache_dir, "blobs")
+    if os.path.exists(blobs_dir):
+        for f in os.listdir(blobs_dir):
+            if f.endswith(".incomplete"):
+                return None, "incomplete"
+    
+    # 查找 snapshots 目录
+    snapshots_dir = os.path.join(model_cache_dir, "snapshots")
+    if not os.path.exists(snapshots_dir):
+        return None, "not_found"
+    
+    # 遍历所有 snapshot
+    for snapshot_name in os.listdir(snapshots_dir):
+        snapshot_path = os.path.join(snapshots_dir, snapshot_name)
+        if not os.path.isdir(snapshot_path):
             continue
         
-        model_cache_dir = os.path.join(cache_root, cache_dir_name)
-        if not os.path.exists(model_cache_dir):
+        # 检查是否有 config.json
+        config_path = os.path.join(snapshot_path, "config.json")
+        if not os.path.exists(config_path):
             continue
         
-        # 查找 snapshots 目录
-        snapshots_dir = os.path.join(model_cache_dir, "snapshots")
-        if not os.path.exists(snapshots_dir):
-            continue
-        
-        # 遍历所有 snapshot（通常只有一个）
-        for snapshot_name in os.listdir(snapshots_dir):
-            snapshot_path = os.path.join(snapshots_dir, snapshot_name)
-            if not os.path.isdir(snapshot_path):
-                continue
-            
-            # 检查是否有模型文件
-            has_model = False
-            has_config = os.path.exists(os.path.join(snapshot_path, "config.json"))
-            
-            for f in os.listdir(snapshot_path):
-                if f.endswith(".safetensors") or f.endswith(".bin"):
+        # 检查是否有模型权重文件（可能是软链接）
+        has_model = False
+        for f in os.listdir(snapshot_path):
+            file_path = os.path.join(snapshot_path, f)
+            # 检查文件名或软链接目标
+            if f.endswith(".safetensors") or f.endswith(".bin"):
+                # 如果是软链接，检查目标是否存在
+                if os.path.islink(file_path):
+                    target = os.path.realpath(file_path)
+                    if os.path.exists(target) and os.path.getsize(target) > 100_000_000:  # > 100MB
+                        has_model = True
+                        break
+                elif os.path.isfile(file_path) and os.path.getsize(file_path) > 100_000_000:
                     has_model = True
                     break
-            
-            if has_model and has_config:
-                print(f"✅ 检测到本地模型: {snapshot_path}")
-                return snapshot_path
+        
+        if has_model:
+            print(f"✅ 检测到本地模型: {snapshot_path}")
+            return snapshot_path, "complete"
     
-    return None
+    # 有缓存目录但没有模型权重
+    return None, "incomplete"
 
 
 def resolve_model_path(model: str) -> str:
@@ -121,12 +131,6 @@ def resolve_model_path(model: str) -> str:
     解析模型路径 - 核心逻辑
     
     关键：必须返回本地绝对路径给 vLLM，避免触发 snapshot_download()
-    
-    优先级：
-    1. 如果是已存在的本地路径，直接返回
-    2. 如果是简写（如 1.5b），转换为完整模型 ID，然后查找本地缓存
-    3. 如果本地缓存存在，返回本地路径
-    4. 如果本地缓存不存在，报错提示先下载
     """
     # 如果是本地路径且存在
     if os.path.exists(model):
@@ -138,21 +142,24 @@ def resolve_model_path(model: str) -> str:
     model_id = MODELS.get(model.lower(), model)
     
     # 查找本地缓存
-    local_path = get_local_model_path(model_id)
+    local_path, status = get_local_model_path(model_id)
     
-    if local_path:
-        # 关键：返回本地路径，不是模型 ID
+    if status == "complete" and local_path:
         return local_path
     
-    # 模型不存在，报错退出
-    print(f"\n❌ 模型未在本地找到: {model_id}")
-    print(f"   搜索的缓存目录:")
-    for d in HF_CACHE_DIRS:
-        d = os.path.expanduser(d)
-        exists = "✓" if os.path.exists(d) else "✗"
-        print(f"     [{exists}] {d}")
-    print(f"\n   请先下载模型:")
-    print(f"   python download_model.py --model {model}")
+    # 模型不存在或不完整
+    if status == "incomplete":
+        print(f"\n⚠️ 模型下载不完整: {model_id}")
+        print(f"   发现 .incomplete 文件，说明下载被中断")
+        print(f"\n   解决方案:")
+        print(f"   1. 清除缓存: rm -rf {HF_CACHE_DIR}/models--{model_id.replace('/', '--')}")
+        print(f"   2. 重新下载: python download_model.py --model {model}")
+    else:
+        print(f"\n❌ 模型未在本地找到: {model_id}")
+        print(f"   缓存目录: {HF_CACHE_DIR}")
+        print(f"\n   请先下载模型:")
+        print(f"   python download_model.py --model {model}")
+    
     print(f"\n   或者指定本地路径:")
     print(f"   python start_vllm_server.py --model /path/to/model")
     sys.exit(1)
