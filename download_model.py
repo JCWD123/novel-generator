@@ -1,27 +1,28 @@
 #!/usr/bin/env python3
 """
-使用 huggingface_hub 下载 DeepSeek-R1 蒸馏版模型
-支持断点续传和加速下载
+模型下载脚本 - 模仿 eedi-mining-misconceptions 项目
+
+支持两种下载方式：
+1. 从 HuggingFace 下载（使用 hf_transfer 加速）
+2. 从 Kaggle 下载（使用 kagglehub）
+
+用法：
+    # 从 HuggingFace 下载（推荐）
+    HF_HUB_ENABLE_HF_TRANSFER=1 python download_model.py --model 7b
+    
+    # 使用镜像加速
+    HF_HUB_ENABLE_HF_TRANSFER=1 python download_model.py --model 7b --mirror
+    
+    # 下载所有模型
+    python download_model.py --all
 """
 
 import os
+import subprocess
 import sys
-import argparse
-from pathlib import Path
-from huggingface_hub import snapshot_download, hf_hub_download
-from huggingface_hub.utils import HfHubHTTPError
-import logging
 
-# 配置日志
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
-
-# 可用的 DeepSeek-R1 蒸馏版模型列表
-AVAILABLE_MODELS = {
+# DeepSeek-R1 蒸馏版模型列表
+MODELS = {
     "1.5b": "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B",
     "7b": "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",
     "14b": "deepseek-ai/DeepSeek-R1-Distill-Qwen-14B",
@@ -30,123 +31,119 @@ AVAILABLE_MODELS = {
 }
 
 
-def download_model(
-    model_name: str,
-    cache_dir: str = "/home/user/models",
-    use_mirror: bool = False,
-    max_workers: int = 8,
-    resume_download: bool = True,
-):
+def download_from_hf(model_id: str, use_mirror: bool = False) -> None:
     """
-    下载指定的模型
+    从 HuggingFace 下载模型
     
-    Args:
-        model_name: 模型名称或 HuggingFace 仓库 ID
-        cache_dir: 模型缓存目录
-        use_mirror: 是否使用镜像站 (hf-mirror.com)
-        max_workers: 下载并发数
-        resume_download: 是否支持断点续传
+    借鉴 Train-parts-eedi 项目的下载方式：
+    HF_HUB_ENABLE_HF_TRANSFER=1 huggingface-cli download <model>
     """
-    # 如果是简写形式，转换为完整模型名
-    if model_name.lower() in AVAILABLE_MODELS:
-        model_id = AVAILABLE_MODELS[model_name.lower()]
-    else:
-        model_id = model_name
+    print(f"\n{'='*60}")
+    print(f"📥 Downloading: {model_id}")
+    print(f"{'='*60}")
     
-    logger.info(f"开始下载模型: {model_id}")
-    logger.info(f"缓存目录: {cache_dir}")
+    env = os.environ.copy()
     
-    # 创建缓存目录
-    Path(cache_dir).mkdir(parents=True, exist_ok=True)
+    # 启用 hf_transfer 加速
+    env["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
     
-    # 设置镜像站 (可选,用于中国大陆加速)
+    # 使用镜像
     if use_mirror:
-        os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
-        logger.info("使用 HuggingFace 镜像站: hf-mirror.com")
+        env["HF_ENDPOINT"] = "https://hf-mirror.com"
+        print("🌐 Using mirror: hf-mirror.com")
+    
+    # 使用 huggingface-cli download
+    cmd = ["huggingface-cli", "download", model_id]
     
     try:
-        # 使用 snapshot_download 下载完整模型
-        local_dir = snapshot_download(
-            repo_id=model_id,
-            cache_dir=cache_dir,
-            local_dir=os.path.join(cache_dir, model_id.replace("/", "--")),
-            local_dir_use_symlinks=False,  # Windows 兼容
-            resume_download=resume_download,
-            max_workers=max_workers,
-            ignore_patterns=["*.md", "*.txt", "LICENSE*"],  # 忽略非必要文件
-        )
-        
-        logger.info(f"模型下载完成!")
-        logger.info(f"模型路径: {local_dir}")
-        return local_dir
-        
-    except HfHubHTTPError as e:
-        logger.error(f"下载失败: {e}")
-        logger.info("提示: 如果遇到网络问题，可以尝试:")
-        logger.info("  1. 使用 --mirror 参数启用镜像站")
-        logger.info("  2. 设置代理: export https_proxy=http://127.0.0.1:7890")
-        logger.info("  3. 使用 huggingface-cli login 登录账户")
+        subprocess.run(cmd, env=env, check=True)
+        print(f"\n✅ Downloaded: {model_id}")
+    except subprocess.CalledProcessError as e:
+        print(f"\n❌ Failed to download: {e}")
         sys.exit(1)
+    except FileNotFoundError:
+        print("❌ huggingface-cli not found. Installing...")
+        subprocess.run([sys.executable, "-m", "pip", "install", "huggingface_hub[hf_transfer]", "-q"])
+        subprocess.run(cmd, env=env, check=True)
+
+
+def download_from_kaggle(handle: str) -> None:
+    """
+    从 Kaggle 下载模型 - 模仿 eedi-mining-misconceptions 项目
+    """
+    try:
+        import kagglehub
+        
+        print(f"\n{'='*60}")
+        print(f"📥 Downloading from Kaggle: {handle}")
+        print(f"{'='*60}")
+        
+        local_dir = kagglehub.model_download(handle)
+        print(f"✅ Downloaded to: {local_dir}")
+        
     except Exception as e:
-        logger.error(f"下载出错: {e}")
-        sys.exit(1)
+        print(f"❌ Failed to download: {e}")
 
 
 def main():
+    import argparse
+    
     parser = argparse.ArgumentParser(
-        description="下载 DeepSeek-R1 蒸馏版模型",
+        description="Download DeepSeek-R1 models",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-可用的模型简写:
-  1.5b  -> deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B  (约 3GB, 测试用)
-  7b    -> deepseek-ai/DeepSeek-R1-Distill-Qwen-7B    (约 14GB, 推荐)
-  14b   -> deepseek-ai/DeepSeek-R1-Distill-Qwen-14B   (约 28GB)
-  32b   -> deepseek-ai/DeepSeek-R1-Distill-Qwen-32B   (约 64GB)
-  70b   -> deepseek-ai/DeepSeek-R1-Distill-Llama-70B  (约 140GB)
+Models:
+  1.5b  -> deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B  (~3GB)
+  7b    -> deepseek-ai/DeepSeek-R1-Distill-Qwen-7B    (~14GB)
+  14b   -> deepseek-ai/DeepSeek-R1-Distill-Qwen-14B   (~28GB)
+  32b   -> deepseek-ai/DeepSeek-R1-Distill-Qwen-32B   (~64GB)
+  70b   -> deepseek-ai/DeepSeek-R1-Distill-Llama-70B  (~140GB)
 
-示例:
-  python download_model.py 7b
-  python download_model.py 7b --mirror
-  python download_model.py deepseek-ai/DeepSeek-R1-Distill-Qwen-7B --cache-dir /data/models
+Examples:
+  # Download with hf_transfer acceleration
+  HF_HUB_ENABLE_HF_TRANSFER=1 python download_model.py --model 7b
+  
+  # Use mirror (for China)
+  HF_HUB_ENABLE_HF_TRANSFER=1 python download_model.py --model 7b --mirror
         """
     )
     
-    parser.add_argument(
-        "model",
-        type=str,
-        help="模型名称 (如 7b) 或完整 HuggingFace 仓库 ID"
-    )
-    parser.add_argument(
-        "--cache-dir",
-        type=str,
-        default="/home/user/models",
-        help="模型缓存目录 (默认: /home/user/models)"
-    )
-    parser.add_argument(
-        "--mirror",
-        action="store_true",
-        help="使用 HuggingFace 镜像站 (hf-mirror.com) 加速下载"
-    )
-    parser.add_argument(
-        "--workers",
-        type=int,
-        default=8,
-        help="下载并发数 (默认: 8)"
-    )
+    parser.add_argument("--model", "-m", type=str, choices=list(MODELS.keys()),
+                        help="Model to download (1.5b/7b/14b/32b/70b)")
+    parser.add_argument("--model-id", type=str, help="Full HuggingFace model ID")
+    parser.add_argument("--mirror", action="store_true", help="Use hf-mirror.com")
+    parser.add_argument("--all", action="store_true", help="Download all models")
+    parser.add_argument("--kaggle", type=str, help="Kaggle model handle")
     
     args = parser.parse_args()
     
-    download_model(
-        model_name=args.model,
-        cache_dir=args.cache_dir,
-        use_mirror=args.mirror,
-        max_workers=args.workers,
-    )
+    # 从 Kaggle 下载
+    if args.kaggle:
+        download_from_kaggle(args.kaggle)
+        return
     
-    print("\n" + "="*50)
-    print("下载完成! 接下来可以运行 vLLM 服务:")
-    print("  python start_vllm_server.py")
-    print("="*50)
+    # 下载所有模型
+    if args.all:
+        for key, model_id in MODELS.items():
+            download_from_hf(model_id, args.mirror)
+        return
+    
+    # 下载指定模型
+    if args.model:
+        model_id = MODELS[args.model]
+    elif args.model_id:
+        model_id = args.model_id
+    else:
+        parser.print_help()
+        print("\n❌ Please specify --model or --model-id")
+        sys.exit(1)
+    
+    download_from_hf(model_id, args.mirror)
+    
+    print("\n" + "="*60)
+    print("✅ Download complete!")
+    print("Next: python start_vllm_server.py --model", model_id)
+    print("="*60)
 
 
 if __name__ == "__main__":
