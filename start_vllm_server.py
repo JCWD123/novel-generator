@@ -56,43 +56,64 @@ MODELS = {
     "70b": "deepseek-ai/DeepSeek-R1-Distill-Llama-70B",
 }
 
+# HuggingFace 缓存目录（按优先级）
+HF_CACHE_DIRS = [
+    os.path.expanduser("~/.cache/huggingface/hub"),  # Linux/WSL 默认
+    "/home/birdi/.cache/huggingface/hub",            # 你的 WSL 路径
+    os.path.expandvars("$HF_HOME/hub"),              # 自定义 HF_HOME
+]
+
 
 def get_local_model_path(model_id: str) -> str:
     """
     检查模型是否已下载到本地，返回本地 snapshot 路径
     
-    关键：必须返回本地路径而不是模型 ID，否则 vLLM 仍会调用 snapshot_download()
+    直接扫描 HuggingFace 缓存目录结构，不依赖 scan_cache_dir()
     
     Args:
-        model_id: HuggingFace 模型 ID
+        model_id: HuggingFace 模型 ID (如 deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B)
         
     Returns:
         本地模型路径（绝对路径），如果不存在则返回 None
     """
-    try:
-        from huggingface_hub import scan_cache_dir
+    # 将模型 ID 转换为缓存目录名格式
+    # deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B -> models--deepseek-ai--DeepSeek-R1-Distill-Qwen-1.5B
+    cache_dir_name = "models--" + model_id.replace("/", "--")
+    
+    for cache_root in HF_CACHE_DIRS:
+        cache_root = os.path.expanduser(cache_root)
+        if not os.path.exists(cache_root):
+            continue
         
-        cache_info = scan_cache_dir()
+        model_cache_dir = os.path.join(cache_root, cache_dir_name)
+        if not os.path.exists(model_cache_dir):
+            continue
         
-        for repo in cache_info.repos:
-            if repo.repo_id == model_id:
-                if repo.revisions:
-                    for revision in repo.revisions:
-                        snapshot_path = revision.snapshot_path
-                        if snapshot_path.exists():
-                            # 检查是否有实际的模型文件
-                            model_files = list(snapshot_path.glob("*.safetensors")) + list(snapshot_path.glob("*.bin"))
-                            config_file = snapshot_path / "config.json"
-                            
-                            if model_files and config_file.exists():
-                                print(f"✅ 检测到本地模型: {snapshot_path}")
-                                return str(snapshot_path)
+        # 查找 snapshots 目录
+        snapshots_dir = os.path.join(model_cache_dir, "snapshots")
+        if not os.path.exists(snapshots_dir):
+            continue
         
-        return None
-        
-    except Exception as e:
-        print(f"⚠️ 检查本地模型失败: {e}")
-        return None
+        # 遍历所有 snapshot（通常只有一个）
+        for snapshot_name in os.listdir(snapshots_dir):
+            snapshot_path = os.path.join(snapshots_dir, snapshot_name)
+            if not os.path.isdir(snapshot_path):
+                continue
+            
+            # 检查是否有模型文件
+            has_model = False
+            has_config = os.path.exists(os.path.join(snapshot_path, "config.json"))
+            
+            for f in os.listdir(snapshot_path):
+                if f.endswith(".safetensors") or f.endswith(".bin"):
+                    has_model = True
+                    break
+            
+            if has_model and has_config:
+                print(f"✅ 检测到本地模型: {snapshot_path}")
+                return snapshot_path
+    
+    return None
 
 
 def resolve_model_path(model: str) -> str:
@@ -125,7 +146,12 @@ def resolve_model_path(model: str) -> str:
     
     # 模型不存在，报错退出
     print(f"\n❌ 模型未在本地找到: {model_id}")
-    print(f"   请先下载模型:")
+    print(f"   搜索的缓存目录:")
+    for d in HF_CACHE_DIRS:
+        d = os.path.expanduser(d)
+        exists = "✓" if os.path.exists(d) else "✗"
+        print(f"     [{exists}] {d}")
+    print(f"\n   请先下载模型:")
     print(f"   python download_model.py --model {model}")
     print(f"\n   或者指定本地路径:")
     print(f"   python start_vllm_server.py --model /path/to/model")
