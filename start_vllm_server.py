@@ -24,10 +24,28 @@ import subprocess
 import sys
 from pathlib import Path
 
+# ========== 环境变量设置 ==========
 # 强制使用镜像站
 os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
-os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+# 检测 hf_transfer 是否安装，只有安装了才启用
+def _check_hf_transfer():
+    try:
+        import hf_transfer
+        return True
+    except ImportError:
+        return False
+
+if _check_hf_transfer():
+    os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
+    print("⚡ hf_transfer 已安装，启用加速下载")
+else:
+    # 关键：如果没装 hf_transfer，必须移除或设为 0
+    os.environ.pop("HF_HUB_ENABLE_HF_TRANSFER", None)
+    os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
+    print("⚠️ hf_transfer 未安装，使用普通下载模式")
+    print("   提示：pip install hf_transfer 可加速下载")
 
 # 模型配置
 MODELS = {
@@ -41,30 +59,32 @@ MODELS = {
 
 def get_local_model_path(model_id: str) -> str:
     """
-    检查模型是否已下载到本地，返回本地路径
+    检查模型是否已下载到本地，返回本地 snapshot 路径
+    
+    关键：必须返回本地路径而不是模型 ID，否则 vLLM 仍会调用 snapshot_download()
     
     Args:
         model_id: HuggingFace 模型 ID
         
     Returns:
-        本地模型路径，如果不存在则返回 None
+        本地模型路径（绝对路径），如果不存在则返回 None
     """
     try:
-        from huggingface_hub import scan_cache_dir, try_to_load_from_cache
+        from huggingface_hub import scan_cache_dir
         
-        # 扫描缓存目录
         cache_info = scan_cache_dir()
         
         for repo in cache_info.repos:
             if repo.repo_id == model_id:
-                # 找到最新的 snapshot
                 if repo.revisions:
                     for revision in repo.revisions:
                         snapshot_path = revision.snapshot_path
-                        # 检查是否有模型文件
                         if snapshot_path.exists():
+                            # 检查是否有实际的模型文件
                             model_files = list(snapshot_path.glob("*.safetensors")) + list(snapshot_path.glob("*.bin"))
-                            if model_files:
+                            config_file = snapshot_path / "config.json"
+                            
+                            if model_files and config_file.exists():
                                 print(f"✅ 检测到本地模型: {snapshot_path}")
                                 return str(snapshot_path)
         
@@ -77,29 +97,39 @@ def get_local_model_path(model_id: str) -> str:
 
 def resolve_model_path(model: str) -> str:
     """
-    解析模型路径
+    解析模型路径 - 核心逻辑
     
-    1. 如果是本地路径，直接返回
-    2. 如果是简写（如 1.5b），转换为完整模型 ID
-    3. 检查本地缓存，如果已下载则返回本地路径
-    4. 否则返回模型 ID（vLLM 会自动下载）
+    关键：必须返回本地绝对路径给 vLLM，避免触发 snapshot_download()
+    
+    优先级：
+    1. 如果是已存在的本地路径，直接返回
+    2. 如果是简写（如 1.5b），转换为完整模型 ID，然后查找本地缓存
+    3. 如果本地缓存存在，返回本地路径
+    4. 如果本地缓存不存在，报错提示先下载
     """
-    # 如果是本地路径
+    # 如果是本地路径且存在
     if os.path.exists(model):
-        print(f"✅ 使用本地模型: {model}")
-        return model
+        abs_path = os.path.abspath(model)
+        print(f"✅ 使用本地模型: {abs_path}")
+        return abs_path
     
-    # 解析简写
-    model_id = MODELS.get(model, model)
+    # 解析简写为完整模型 ID
+    model_id = MODELS.get(model.lower(), model)
     
-    # 检查本地缓存
+    # 查找本地缓存
     local_path = get_local_model_path(model_id)
+    
     if local_path:
+        # 关键：返回本地路径，不是模型 ID
         return local_path
     
-    print(f"📥 模型未在本地找到，将通过镜像站下载: {model_id}")
-    print(f"🌐 镜像站: {os.environ.get('HF_ENDPOINT', 'https://hf-mirror.com')}")
-    return model_id
+    # 模型不存在，报错退出
+    print(f"\n❌ 模型未在本地找到: {model_id}")
+    print(f"   请先下载模型:")
+    print(f"   python download_model.py --model {model}")
+    print(f"\n   或者指定本地路径:")
+    print(f"   python start_vllm_server.py --model /path/to/model")
+    sys.exit(1)
 
 
 def start_openai_server(
@@ -117,18 +147,17 @@ def start_openai_server(
     """
     启动 OpenAI 兼容的 API 服务器
     """
-    # 解析模型路径（优先使用本地缓存）
+    # 解析模型路径（必须是本地路径）
     model_path = resolve_model_path(model)
     
     print(f"\n{'='*60}")
     print(f"🚀 启动 vLLM OpenAI 兼容服务器")
     print(f"{'='*60}")
-    print(f"模型: {model_path}")
+    print(f"模型路径: {model_path}")
     print(f"地址: {host}:{port}")
     print(f"张量并行: {tensor_parallel_size} GPU(s)")
     print(f"显存利用率: {gpu_memory_utilization}")
     print(f"最大序列长度: {max_model_len}")
-    print(f"镜像站: {os.environ.get('HF_ENDPOINT')}")
     print(f"{'='*60}\n")
     
     cmd = [
@@ -158,6 +187,7 @@ def start_openai_server(
         print("\n⏹️ 服务器已停止")
     except subprocess.CalledProcessError as e:
         print(f"\n❌ 服务器启动失败: {e}")
+        sys.exit(1)
 
 
 def interactive_generate(
@@ -173,13 +203,13 @@ def interactive_generate(
     import torch
     from vllm import LLM, SamplingParams
     
-    # 解析模型路径（优先使用本地缓存）
+    # 解析模型路径（必须是本地路径）
     model_path = resolve_model_path(model)
     
     print(f"\n{'='*60}")
     print(f"🚀 创建 vLLM 实例")
     print(f"{'='*60}")
-    print(f"模型: {model_path}")
+    print(f"模型路径: {model_path}")
     print(f"张量并行: {tensor_parallel_size} GPU(s)")
     print(f"{'='*60}\n")
     
@@ -229,11 +259,12 @@ def interactive_generate(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="vLLM 服务器 - 张量并行部署（强制使用镜像站）",
+        description="vLLM 服务器 - 张量并行部署（使用本地模型）",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例:
-  # 单卡部署
+  # 单卡部署（需先下载模型）
+  python download_model.py --model 7b
   python start_vllm_server.py --model 7b
   
   # 双卡张量并行（70B 模型）
@@ -249,8 +280,8 @@ def main():
   python start_vllm_server.py --model 7b --interactive
 
 注意: 
-  - 自动检测本地已下载的模型，避免重复下载
-  - 强制使用镜像站 (hf-mirror.com) 加速下载
+  - 必须先用 download_model.py 下载模型
+  - 传给 vLLM 的是本地路径，不会触发额外下载
         """
     )
     
