@@ -62,3 +62,4 @@ Thumbs.db
 # 临时文件
 *.tmp
 *.temp
+chat_history/*.json
