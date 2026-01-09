@@ -25,3 +25,4 @@ autoawq>=0.2.0  # 注意: 已弃用，但仍可用
 # streamlit>=1.40.0  # 旧版 Streamlit 前端
 # vllm>=0.6.0  # 生产环境推荐使用 vLLM 部署
 # datasets>=3.0.0  # 仅量化时需要公开数据集
+

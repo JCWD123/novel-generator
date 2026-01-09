@@ -1,0 +1,55 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info
+.eggs
+*.egg
+.pytest_cache
+.coverage
+htmlcov
+
+# 虚拟环境
+venv
+.venv
+env
+.env.local
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+
+# 临时文件
+*.log
+*.tmp
+*.temp
+
+# 构建产物
+*.tar
+dist
+build
+
+# 模型文件 (不包含在镜像中)
+models/
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.ckpt
+
+# 历史记录 (运行时生成)
+chat_history/
+logs/
+
+# 文档
+*.md
+!README.md
+

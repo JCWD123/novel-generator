@@ -110,3 +110,4 @@ def print_config():
     print(f"  vLLM: {VLLM_HOST}:{VLLM_PORT}")
     print(f"  GPU数量: {TENSOR_PARALLEL_SIZE}")
     print("="*60)
+

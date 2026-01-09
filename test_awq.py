@@ -6,3 +6,4 @@ try:
     print("SUCCESS: autoawq imported correctly")
 except ImportError as e:
     print(f"FAILED: {e}")
+

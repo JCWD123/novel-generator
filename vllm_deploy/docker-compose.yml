@@ -1,0 +1,135 @@
+# ========================================
+# Docker Compose 配置
+# ========================================
+# 小说生成器 vLLM 部署
+# 
+# 使用流程:
+# 1. 本地构建镜像: docker compose build
+# 2. 导出镜像: docker save -o images.tar novel-vllm novel-streamlit
+# 3. 服务器加载: docker load -i images.tar
+# 4. 启动服务: docker compose up -d
+# ========================================
+
+version: '3.8'
+
+services:
+  # ==========================================
+  # vLLM 推理服务
+  # ==========================================
+  vllm-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.vllm
+    image: novel-vllm:latest
+    container_name: novel-vllm-server
+    restart: unless-stopped
+    env_file:
+      - .env
+    
+    # GPU 配置
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all  # 使用所有 GPU，或指定 count: 1
+              capabilities: [gpu]
+    
+    # 环境变量
+    environment:
+      - MODEL_PATH=${MODEL_PATH:-/models/DeepSeek-R1-7B-AWQ}
+      - MODEL_NAME=${MODEL_NAME:-deepseek-r1}
+      - VLLM_HOST=${VLLM_HOST:-0.0.0.0}
+      - VLLM_PORT=${VLLM_PORT:-8000}
+      - TENSOR_PARALLEL_SIZE=${TENSOR_PARALLEL_SIZE:-1}
+      - GPU_MEMORY_UTILIZATION=${GPU_MEMORY_UTILIZATION:-0.9}
+      - MAX_MODEL_LEN=${MAX_MODEL_LEN:-4096}
+      - DTYPE=${DTYPE:-float16}
+      - QUANTIZATION=${QUANTIZATION:-awq}
+      - ENFORCE_EAGER=${ENFORCE_EAGER:-true}
+      # NVIDIA 配置
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
+    
+    # 端口映射
+    ports:
+      - "8000:8000"
+    
+    # 挂载模型目录
+    volumes:
+      - ${MODEL_DIR:-./models}:/models:ro
+      - ./logs/vllm:/app/logs
+    
+    # 网络
+    networks:
+      - novel-network
+    
+    # 健康检查
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s  # vLLM 启动较慢
+
+  # ==========================================
+  # Streamlit 前端
+  # ==========================================
+  streamlit:
+    build:
+      context: .
+      dockerfile: Dockerfile.streamlit
+    image: novel-streamlit:latest
+    container_name: novel-streamlit
+    restart: unless-stopped
+    env_file:
+      - .env
+    
+    # 依赖 vLLM 服务
+    depends_on:
+      vllm-server:
+        condition: service_healthy
+    
+    # 环境变量
+    environment:
+      - VLLM_HOST=${VLLM_HOST:-vllm-server}
+      - VLLM_PORT=${VLLM_PORT:-8000}
+      - VLLM_API_URL=${VLLM_API_URL:-http://vllm-server:8000/v1}
+      - MODEL_NAME=${MODEL_NAME:-deepseek-r1}
+      - STREAMLIT_HOST=${STREAMLIT_HOST:-0.0.0.0}
+      - STREAMLIT_PORT=${STREAMLIT_PORT:-8501}
+    
+    # 端口映射
+    ports:
+      - "8501:8501"
+    
+    # 挂载历史记录目录 (持久化)
+    volumes:
+      - ./chat_history:/app/chat_history
+    
+    # 网络
+    networks:
+      - novel-network
+    
+    # 健康检查
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+# ==========================================
+# 网络配置
+# ==========================================
+networks:
+  novel-network:
+    driver: bridge
+
+# ==========================================
+# 数据卷 (可选)
+# ==========================================
+# volumes:
+#   model-data:
+#   chat-history:
+

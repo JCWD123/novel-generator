@@ -1,0 +1,161 @@
+{
+  "session_id": "20260109_191129",
+  "title": "我想创作一个机器人小说",
+  "metadata": {
+    "title": "我想创作一个机器人小说",
+    "created_at": "2026-01-09T19:11:29.042656",
+    "updated_at": "2026-01-09T21:27:48.970957"
+  },
+  "messages": [
+    {
+      "type": "human",
+      "data": {
+        "content": "我想创作一个机器人小说",
+        "additional_kwargs": {},
+        "response_metadata": {},
+        "type": "human",
+        "name": null,
+        "id": null
+      }
+    },
+    {
+      "type": "ai",
+      "data": {
+        "content": "❌ 生成失败: Error code: 400 - {'object': 'error', 'message': '1 validation error:\\n  {\\'type\\': \\'extra_forbidden\\', \\'loc\\': (\\'body\\', \\'max_completion_tokens\\'), \\'msg\\': \\'Extra inputs are not permitted\\', \\'input\\': 2048}\\n\\n  File \"/usr/local/lib/python3.10/dist-packages/vllm/entrypoints/openai/api_server.py\", line 311, in create_chat_completion\\n    POST /v1/chat/completions', 'type': 'BadRequestError', 'param': None, 'code': 400}",
+        "additional_kwargs": {},
+        "response_metadata": {},
+        "type": "ai",
+        "name": null,
+        "id": null,
+        "tool_calls": [],
+        "invalid_tool_calls": [],
+        "usage_metadata": null
+      }
+    },
+    {
+      "type": "human",
+      "data": {
+        "content": "我想创作一个机器人小说",
+        "additional_kwargs": {},
+        "response_metadata": {},
+        "type": "human",
+        "name": null,
+        "id": null
+      }
+    },
+    {
+      "type": "ai",
+      "data": {
+        "content": "❌ 生成失败: Response ended prematurely",
+        "additional_kwargs": {},
+        "response_metadata": {},
+        "type": "ai",
+        "name": null,
+        "id": null,
+        "tool_calls": [],
+        "invalid_tool_calls": [],
+        "usage_metadata": null
+      }
+    },
+    {
+      "type": "human",
+      "data": {
+        "content": "我想创作一个机器人小说",
+        "additional_kwargs": {},
+        "response_metadata": {},
+        "type": "human",
+        "name": null,
+        "id": null
+      }
+    },
+    {
+      "type": "ai",
+      "data": {
+        "content": "❌ 生成失败: Response ended prematurely",
+        "additional_kwargs": {},
+        "response_metadata": {},
+        "type": "ai",
+        "name": null,
+        "id": null,
+        "tool_calls": [],
+        "invalid_tool_calls": [],
+        "usage_metadata": null
+      }
+    },
+    {
+      "type": "human",
+      "data": {
+        "content": "我想创作一个机器人小说",
+        "additional_kwargs": {},
+        "response_metadata": {},
+        "type": "human",
+        "name": null,
+        "id": null
+      }
+    },
+    {
+      "type": "ai",
+      "data": {
+        "content": "❌ 生成失败: Response ended prematurely",
+        "additional_kwargs": {},
+        "response_metadata": {},
+        "type": "ai",
+        "name": null,
+        "id": null,
+        "tool_calls": [],
+        "invalid_tool_calls": [],
+        "usage_metadata": null
+      }
+    },
+    {
+      "type": "human",
+      "data": {
+        "content": "我想创作一个机器人小说",
+        "additional_kwargs": {},
+        "response_metadata": {},
+        "type": "human",
+        "name": null,
+        "id": null
+      }
+    },
+    {
+      "type": "ai",
+      "data": {
+        "content": "❌ 生成失败: Response ended prematurely",
+        "additional_kwargs": {},
+        "response_metadata": {},
+        "type": "ai",
+        "name": null,
+        "id": null,
+        "tool_calls": [],
+        "invalid_tool_calls": [],
+        "usage_metadata": null
+      }
+    },
+    {
+      "type": "human",
+      "data": {
+        "content": "我想创作一个机器人小说",
+        "additional_kwargs": {},
+        "response_metadata": {},
+        "type": "human",
+        "name": null,
+        "id": null
+      }
+    },
+    {
+      "type": "ai",
+      "data": {
+        "content": "❌ 生成失败: Response ended prematurely",
+        "additional_kwargs": {},
+        "response_metadata": {},
+        "type": "ai",
+        "name": null,
+        "id": null,
+        "tool_calls": [],
+        "invalid_tool_calls": [],
+        "usage_metadata": null
+      }
+    }
+  ]
+}
